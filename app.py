@@ -5,9 +5,6 @@ import pandas as pd
 
 st.set_page_config(layout="wide", page_title="Stroop Task")
 
-# ────────────────────────────────────────
-# 定数
-# ────────────────────────────────────────
 COLORS = {
     "あか": "red",
     "あお": "blue",
@@ -18,9 +15,6 @@ COLOR_NAMES = list(COLORS.keys())
 MAX_PRACTICE = 4
 MAX_TRIALS   = 10
 
-# ────────────────────────────────────────
-# 試行シーケンス生成（偏りなし・連続重複なし）
-# ────────────────────────────────────────
 def build_trial_sequence(condition, n_trials):
     if condition == "congruent":
         pool = [(w, w) for w in COLOR_NAMES]
@@ -30,23 +24,21 @@ def build_trial_sequence(condition, n_trials):
     while len(sequence) < n_trials:
         shuffled = pool[:]
         random.shuffle(shuffled)
+        # 連続で同じ問題が出ないようにする処理
         if sequence and shuffled[0] == sequence[-1]:
             swap_idx = random.randint(1, len(shuffled) - 1)
             shuffled[0], shuffled[swap_idx] = shuffled[swap_idx], shuffled[0]
         sequence.extend(shuffled)
     return sequence[:n_trials]
 
-# ────────────────────────────────────────
-# セッション初期化
-# ────────────────────────────────────────
 def init_state():
     defaults = {
         "phase":          "start",
         "trial":          0,
         "results":        [],
         "start_time":     0.0,
-        "seq_condition":  "",    # シーケンスがどの条件で作られたかを記憶
-        "seq_length":     0,     # シーケンスの本来の長さ
+        "seq_condition":  "",
+        "seq_length":     0,
         "trial_sequence": [],
     }
     for k, v in defaults.items():
@@ -56,41 +48,25 @@ def init_state():
 init_state()
 
 # ────────────────────────────────────────
-# 【核心的な防御】
-# セッション復元：アプリ再起動などでtrial_sequenceが消えた場合、
-# seq_condition / seq_length から自動的に再生成する
+# 修正ポイント①：無限ループバグの解消
 # ────────────────────────────────────────
 def ensure_sequence():
-    """
-    phaseがテスト中なのにtrial_sequenceが空 or 短すぎる場合に自動復元する。
-    IndexErrorの根本原因はここで防ぐ。
-    """
     phase = st.session_state.phase
     seq   = st.session_state.trial_sequence
-    trial = st.session_state.trial
-
-    need_rebuild = (
-        phase in ("practice", "part1", "part2")
-        and (len(seq) == 0 or trial >= len(seq))
-    )
-
-    if need_rebuild:
-        cond = st.session_state.seq_condition
-        n    = st.session_state.seq_length
+    
+    # セッションが消えた場合（len(seq) == 0）のみ復元するように変更（無限ループを防止）
+    if phase in ("practice", "part1", "part2") and len(seq) == 0:
+        cond = st.session_state.get("seq_condition")
+        n    = st.session_state.get("seq_length")
         if cond and n > 0:
-            # 以前の条件で再生成（進行状況はリセット）
             st.session_state.trial_sequence = build_trial_sequence(cond, n)
             st.session_state.trial          = 0
             st.session_state.start_time     = time.time()
         else:
-            # 情報すら残っていない場合はスタートに戻す
             st.session_state.phase = "start"
 
 ensure_sequence()
 
-# ────────────────────────────────────────
-# シーケンス読み込み
-# ────────────────────────────────────────
 def load_sequence(condition, n):
     st.session_state.seq_condition  = condition
     st.session_state.seq_length     = n
@@ -105,10 +81,6 @@ def current_pair():
         return None, None
     return seq[idx]
 
-# ────────────────────────────────────────
-# フェーズ移行コールバック（on_click専用）
-# st.rerun()は一切使わない → session_stateが確実に保存される
-# ────────────────────────────────────────
 def go_practice():
     load_sequence("congruent", MAX_PRACTICE)
     st.session_state.phase = "practice"
@@ -118,6 +90,7 @@ def go_part1():
     st.session_state.phase = "part1"
 
 def go_part2():
+    # ここで "incongruent" (不一致) を指定してストループ問題を生成
     load_sequence("incongruent", MAX_TRIALS)
     st.session_state.phase = "part2"
 
@@ -126,14 +99,12 @@ def go_result():
 
 def go_reset():
     st.session_state.clear()
+    init_state()
 
-# ────────────────────────────────────────
-# 回答ボタン押下コールバック
-# ────────────────────────────────────────
 def handle_click(selected_color):
     word, color = current_pair()
     if word is None:
-        return  # 安全ガード
+        return
     reaction_time = time.time() - st.session_state.start_time
     is_correct    = (selected_color == color)
     phase         = st.session_state.phase
@@ -151,15 +122,12 @@ def handle_click(selected_color):
         })
 
     st.session_state.trial     += 1
-    st.session_state.start_time = time.time()  # 次の問題のタイマー開始
+    st.session_state.start_time = time.time()
 
-# ────────────────────────────────────────
-# 刺激＋ボタン描画
-# ────────────────────────────────────────
 def show_stimulus_and_buttons():
     word, color = current_pair()
     if word is None:
-        st.error("⚠️ 試行データが見つかりません。「最初からやり直す」を押してください。")
+        st.error("⚠️ データが見つかりません。「最初からやり直す」を押してください。")
         st.button("最初からやり直す", on_click=go_reset, use_container_width=True)
         return
 
@@ -170,30 +138,16 @@ def show_stimulus_and_buttons():
         unsafe_allow_html=True
     )
 
-    # ボタン順をランダム（位置で覚えるのを防ぐ）
-    shuffled = COLOR_NAMES[:]
-    random.shuffle(shuffled)
-    cols = st.columns(4)
+    # ────────────────────────────────────────
+    # 修正ポイント②：ボタンの配置を固定し、視覚探索のノイズを排除
+    # ────────────────────────────────────────
+    cols  = st.columns(4)
     phase = st.session_state.phase
     trial = st.session_state.trial
 
-    for i, cn in enumerate(shuffled):
+    # ランダムシャッフルを廃止し、常に「あか」「あお」「きいろ」「みどり」の順に固定
+    for i, cn in enumerate(COLOR_NAMES):
         with cols[i]:
-            st.markdown(
-                f"""<style>
-                div[data-testid="column"]:nth-of-type({i+1})
-                div[data-testid="stButton"] button {{
-                    background-color: {COLORS[cn]};
-                    color: white;
-                    font-size: 1.4rem;
-                    font-weight: bold;
-                    height: 75px;
-                    border: none;
-                    border-radius: 12px;
-                }}
-                </style>""",
-                unsafe_allow_html=True
-            )
             st.button(
                 cn,
                 key=f"btn_{phase}_{trial}_{i}",
@@ -202,14 +156,12 @@ def show_stimulus_and_buttons():
                 args=(cn,),
             )
 
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════════════════
 # 画面描画
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════════════════
 st.title("🧠 ストループ課題（Stroop Task）")
-
 phase = st.session_state.phase
 
-# ── スタート画面 ─────────────────────────────────────────────
 if phase == "start":
     st.markdown("---")
     st.markdown(f"""
@@ -229,7 +181,6 @@ if phase == "start":
 | Part 1（{MAX_TRIALS}回） | 文字と色が **一致** | ★☆☆ |
 | Part 2（{MAX_TRIALS}回） | 文字と色が **不一致** | ★★★ |
 """)
-
     st.info("""
 **📌 答え方のルール**
 
@@ -240,12 +191,10 @@ if phase == "start":
 例：<span style='color:blue; font-size:1.4rem; font-weight:bold;'>あか</span>
 →「あか」と書いてあるが青いインクなので **「あお」** を押す
 """, icon="💡")
-
     st.markdown("---")
     st.button("まず練習をはじめる（4回）", type="primary",
               use_container_width=True, on_click=go_practice)
 
-# ── 練習フェーズ ─────────────────────────────────────────────
 elif phase == "practice":
     if st.session_state.trial < MAX_PRACTICE:
         st.markdown(f"### 練習中　{st.session_state.trial + 1} / {MAX_PRACTICE}")
@@ -257,7 +206,6 @@ elif phase == "practice":
         st.button("Part 1 をスタート", type="primary",
                   use_container_width=True, on_click=go_part1)
 
-# ── Part 1 / Part 2 ──────────────────────────────────────────
 elif phase in ("part1", "part2"):
     is_part1  = (phase == "part1")
     label     = "Part 1（一致条件）" if is_part1 else "Part 2（不一致条件）"
@@ -270,10 +218,7 @@ elif phase in ("part1", "part2"):
     else:
         if is_part1:
             st.warning("Part 1 終了！次は文字と色が **一致しない** 難しい問題です。")
-            st.markdown("""
-色名と色が食い違うと、脳は「意味」と「知覚」の間で葛藤を起こします。
-さっきより難しく感じても大丈夫です。インクの色のボタンを押してください。
-""")
+            st.markdown("色名と色が食い違うと、脳は「意味」と「知覚」の間で葛藤を起こします。インクの色のボタンを押してください。")
             st.button("Part 2 をスタート", type="primary",
                       use_container_width=True, on_click=go_part2)
         else:
@@ -281,10 +226,8 @@ elif phase in ("part1", "part2"):
             st.button("結果を見る", type="primary",
                       use_container_width=True, on_click=go_result)
 
-# ── 結果画面 ─────────────────────────────────────────────────
 elif phase == "result":
     st.markdown("## 📊 評価結果")
-
     results = st.session_state.results
     if not results:
         st.warning("記録されたデータがありません。")
@@ -303,24 +246,17 @@ elif phase == "result":
         c1.metric("Part1 平均反応時間", f"{rt1:.3f} 秒")
         c2.metric("Part2 平均反応時間", f"{rt2:.3f} 秒")
         c3.metric("ストループ干渉時間", f"{diff:+.3f} 秒", delta_color="inverse")
-
         c4, c5 = st.columns(2)
         c4.metric("Part1 正答率", f"{acc1:.1f}%")
         c5.metric("Part2 正答率", f"{acc2:.1f}%")
 
         comment = "干渉効果が明確に見られます。" if diff > 0.1 else "干渉効果は小さめです。"
-        st.info(f"""
-**解釈**：ストループ干渉時間は {diff:.3f} 秒です。{comment}
-一般的に不一致条件は一致条件より 0.1〜0.3 秒遅くなると言われています。
-干渉時間が大きいほど、認知的柔軟性・抑制機能に負荷がかかっている可能性があります。
-""")
+        st.info(f"**解釈**：ストループ干渉時間は {diff:.3f} 秒です。{comment} 干渉時間が大きいほど認知的柔軟性・抑制機能に負荷がかかっている可能性があります。")
 
         st.markdown("---")
         st.markdown("### 全試行ログ")
         st.dataframe(df, use_container_width=True)
-
         csv = df.to_csv(index=False, encoding="utf-8-sig")
         st.download_button("📥 CSVダウンロード", csv, "stroop_result.csv", "text/csv")
-
         st.markdown("---")
         st.button("最初からやり直す", use_container_width=True, on_click=go_reset)
