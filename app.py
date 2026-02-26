@@ -83,8 +83,9 @@ init_state()
 def ensure_sequence():
     phase = st.session_state.phase
     seq   = st.session_state.trial_sequence
-    trial = st.session_state.trial
-    if phase in ("practice", "part1", "part2", "part3") and (len(seq) == 0 or trial >= len(seq)):
+    # trial >= len(seq) は「パート完了」の正常状態なのでリセットしてはいけない
+    # len(seq) == 0 のときだけ再構築（Streamlit Cloud再起動対策）
+    if phase in ("practice", "part1", "part2", "part3") and len(seq) == 0:
         cond = st.session_state.get("seq_condition")
         n    = st.session_state.get("seq_length")
         if cond and n > 0:
